@@ -20,6 +20,7 @@ from bot.keyboards import (
     kb_confirm_translation,
 )
 import config
+from state.user_prefs import get_user_prefs
 
 router = Router()
 
@@ -112,6 +113,20 @@ async def select_quality(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(TranslationSession.confirming)
 
     data = await state.get_data()
+
+    # Se guardan las preferencias del usuario al completar el flujo de configuracion,
+    # antes de mostrar el resumen, para que la proxima sesion arranque con los valores
+    # que eligio aqui. Solo se persisten el idioma y el proveedor, que son los que
+    # tienen mayor valor como preferencias persistentes. El modo de salida y la calidad
+    # son decisiones mas especificas de cada libro y se mantienen en el estado FSM
+    # sin propagarse a las preferencias globales del usuario.
+    if callback.from_user:
+        await get_user_prefs().save_prefs(
+            user_id=callback.from_user.id,
+            target_language=data["target_language"],
+            provider=data["provider"],
+        )
+
     lang_name = config.TARGET_LANGUAGES.get(data["target_language"], data["target_language"])
     mode_label = config.OUTPUT_MODES.get(data["output_mode"], data["output_mode"])
 

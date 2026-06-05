@@ -14,6 +14,63 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from xml.etree import ElementTree as ET
 
+from lxml import etree as lxml_et
+
+
+# El patron busca el charset declarado en las primeras dos variantes del meta tag
+# de HTML: <meta charset="UTF-8"> del estandar HTML5 y el mas antiguo
+# <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">.
+# Solo se analiza el primer kilobyte del archivo porque el meta tag de encoding
+# debe aparecer dentro del elemento head, que siempre esta al inicio del documento.
+_CHARSET_META = re.compile(
+    rb'<meta[^>]+charset\s*=\s*["\']?\s*([a-zA-Z0-9_-]+)',
+    re.IGNORECASE,
+)
+
+
+def _detect_encoding(raw: bytes) -> str:
+    """
+    Detecta el charset declarado en el meta tag del HTML inspeccionando los primeros
+    dos kilobytes del documento antes de intentar decodificarlo. Si el valor declarado
+    no es un encoding reconocido por Python, o si no hay ningun meta tag de charset,
+    se usa UTF-8 como fallback porque es la codificacion obligatoria para EPUBs
+    segun la especificacion EPUB 3, aunque muchos EPUBs mas antiguos declaran ISO-8859-1
+    y los modernos editores de ebooks tambien producen UTF-8 sin declararlo explicitamente.
+    """
+    match = _CHARSET_META.search(raw[:2048])
+    if match:
+        declared = match.group(1).decode("ascii", errors="replace")
+        try:
+            "".encode(declared)
+            return declared
+        except LookupError:
+            pass
+    return "utf-8"
+
+
+def _parse_xml(raw: bytes) -> ET.Element:
+    """
+    Parsea un documento XML en dos intentos: primero con el parser estandar de Python
+    que es estricto con el formato, y si falla con un ParseError intenta con el parser
+    de recuperacion de lxml que tolera XML mal formado y produce un arbol parcialmente
+    correcto a partir del contenido valido que encuentra.
+
+    El resultado siempre es un ET.Element de la biblioteca estandar, de manera que
+    el resto del codigo no necesita saber que parser se uso y puede operar con la
+    misma API en ambos casos.
+    """
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError:
+        # lxml con recover=True puede parsear XML con tags sin cerrar, atributos sin
+        # comillas, caracteres invalidos, y otros errores comunes en EPUBs producidos
+        # por editores de terceros o convertidos desde formatos no nativos como DOCX.
+        # La doble conversion a string y de vuelta a ET.Element garantiza compatibilidad.
+        parser = lxml_et.XMLParser(recover=True)
+        lxml_root = lxml_et.fromstring(raw, parser)
+        recovered_bytes = lxml_et.tostring(lxml_root, encoding="unicode").encode("utf-8")
+        return ET.fromstring(recovered_bytes)
+
 
 # Los namespaces XML que aparecen en los archivos internos del EPUB son URIs largas y
 # poco legibles. Registrarlos aqui bajo alias cortos permite que ElementTree los use
@@ -96,7 +153,7 @@ class EpubBook:
 # no hay forma confiable de encontrar el OPF en todos los EPUBs validos.
 def _find_opf_path(zf: zipfile.ZipFile) -> str:
     raw = zf.read("META-INF/container.xml")
-    root = ET.fromstring(raw)
+    root = _parse_xml(raw)
 
     # Se intenta primero la busqueda con el namespace registrado, que es la forma correcta
     # segun el estandar. Si falla (algunos EPUBs mal formados no declaran el namespace
@@ -214,7 +271,8 @@ def _parse_spine(root: ET.Element, ns_opf: str) -> list[str]:
 # no distingue palabras reales de numeros o codigos), pero es suficientemente buena
 # para mostrar al usuario una estimacion de costo y tiempo antes de confirmar la traduccion.
 def _estimate_words(html_bytes: bytes) -> int:
-    text = html_bytes.decode("utf-8", errors="replace")
+    encoding = _detect_encoding(html_bytes)
+    text = html_bytes.decode(encoding, errors="replace")
     words = re.findall(r"\b\w+\b", text)
     return len(words)
 
@@ -254,7 +312,7 @@ def open_epub(path: str) -> EpubBook:
         raise ValueError(f"El OPF declarado en container.xml no existe dentro del ZIP: {opf_path}")
 
     raw_opf = zf.read(opf_path)
-    root = ET.fromstring(raw_opf)
+    root = _parse_xml(raw_opf)
 
     ns_opf = "{http://www.idpf.org/2007/opf}"
     base_dir = _opf_base_dir(opf_path)

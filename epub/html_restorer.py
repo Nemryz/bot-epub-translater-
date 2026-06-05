@@ -14,10 +14,83 @@ CleanResult producido por html_cleaner.py y no debe usarse con datos de otra pro
 
 import logging
 import re
+from dataclasses import dataclass, field
 
 from epub.html_cleaner import CleanResult
 
 logger = logging.getLogger(__name__)
+
+# Detecta el signo de puntuacion final esperado al terminar una oracion en la
+# mayoria de los idiomas occidentales. Las comillas y parentesis de cierre se
+# incluyen porque algunas oraciones terminan con signos dentro de ellos.
+_FINAL_PUNCT = re.compile(r'[.!?…»"\')\]]+\s*$')
+
+# Detecta patrones que parecen tokens no restaurados: corchetes con solo digitos
+# como [1] o con formato de token como [T01] que quedaron literalmente en el texto
+# porque el modelo los altero ligeramente o porque el restorer no los reconocio.
+_RESIDUAL_BRACKET = re.compile(r'\[\d+\]|\[[A-Z]+\d+\]')
+
+
+@dataclass
+class ValidationResult:
+    """
+    Resultado de la validacion de calidad de un fragmento traducido.
+
+    El campo is_valid indica si el fragmento paso todas las verificaciones, y el
+    campo issues lista los problemas detectados con una descripcion breve de cada
+    uno, de forma que la capa de traduccion pueda decidir si reintentar la llamada
+    al modelo o aceptar el resultado con sus limitaciones.
+    """
+
+    is_valid: bool
+    issues: list[str] = field(default_factory=list)
+
+
+def validate_translation(original_text: str, translated_text: str) -> ValidationResult:
+    """
+    Verifica la calidad de un fragmento traducido comprobando tres condiciones que
+    son indicadores confiables de respuestas defectuosas del modelo de lenguaje.
+
+    La primera condicion es la relacion de longitud entre la traduccion y el original:
+    si la traduccion es menos de 0.4 veces o mas de 2.5 veces la longitud del texto
+    de entrada, probablemente el modelo omitio contenido, lo duplico, o alucinó texto
+    que no estaba en el original. La segunda condicion es la presencia de corchetes con
+    numeros en el texto traducido, que indica que el modelo altero el formato de un
+    token y el restorer no pudo restaurarlo, dejando el token como texto literal. La
+    tercera condicion es que el texto traducido no termine con signo de puntuacion, lo
+    que sugiere que el modelo corto la respuesta antes de completar la ultima oracion,
+    posiblemente por haber alcanzado el limite de tokens de la llamada.
+    """
+    issues: list[str] = []
+    original_stripped = original_text.strip()
+    translated_stripped = translated_text.strip()
+
+    if original_stripped:
+        ratio = len(translated_stripped) / len(original_stripped) if original_stripped else 1.0
+        if ratio < 0.4 or ratio > 2.5:
+            issues.append(
+                f"relacion de longitud anormal: la traduccion mide {ratio:.2f}x el original "
+                f"({len(translated_stripped)} vs {len(original_stripped)} caracteres)"
+            )
+
+    if translated_stripped and _RESIDUAL_BRACKET.search(translated_stripped):
+        issues.append(
+            "se detectaron corchetes con numeros en el texto traducido, "
+            "lo que sugiere tokens no restaurados que el modelo altero de formato"
+        )
+
+    if translated_stripped and not _FINAL_PUNCT.search(translated_stripped):
+        issues.append(
+            "el texto traducido no termina con signo de puntuacion, "
+            "lo que puede indicar truncamiento por limite de tokens del modelo"
+        )
+
+    if issues:
+        for issue in issues:
+            logger.warning("Validacion de traduccion: %s", issue)
+
+    return ValidationResult(is_valid=len(issues) == 0, issues=issues)
+
 
 # El patron de expresion regular que identifica tokens en el texto traducido cubre
 # tanto los tokens de tags inline ([T01] y [/T01]) como los de elementos de posicion

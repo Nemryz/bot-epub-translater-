@@ -10,10 +10,10 @@ sin tocar ninguna otra parte del sistema.
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 import config
 from bot.handlers import upload, settings, start
+from state.sqlite_storage import SqliteStorage
 
 # El formato de logging incluye timestamp, nivel, nombre del logger y mensaje, lo cual
 # es suficiente para depurar problemas en produccion sin necesidad de configurar un
@@ -44,13 +44,15 @@ async def set_commands(bot: Bot) -> None:
 async def main() -> None:
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
 
-    # MemoryStorage guarda el estado FSM de cada usuario en RAM, lo que es correcto
-    # para desarrollo y para uso personal con pocos usuarios concurrentes. Si en el
-    # futuro el bot necesita escalar a multiples instancias o sobrevivir reinicios
-    # conservando el estado de las conversaciones, se reemplaza por RedisStorage
-    # sin cambiar ninguna otra parte del codigo, porque aiogram abstrae el almacenamiento
-    # detras de una interfaz comun.
-    dp = Dispatcher(storage=MemoryStorage())
+    # SqliteStorage persiste el estado FSM en disco, de manera que si el bot se
+    # reinicia en medio de un flujo de configuracion el usuario puede retomarlo
+    # sin necesidad de volver a subir el archivo. La base de datos se guarda en
+    # TRANSLATIONS_CACHE_DIR junto con el resto de los archivos de estado del sistema.
+    # Si en el futuro el bot necesita escalar a multiples instancias se reemplaza
+    # por RedisStorage sin cambiar ningun handler, porque aiogram abstrae el
+    # almacenamiento detras de una interfaz comun con los mismos metodos.
+    storage = SqliteStorage(config.TRANSLATIONS_CACHE_DIR / "bot_state.db")
+    dp = Dispatcher(storage=storage)
 
     # El orden de registro de los routers importa: aiogram los evalua en secuencia y
     # el primer router cuyo filtro coincide con un mensaje o callback es el que lo procesa.
