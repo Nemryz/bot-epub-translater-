@@ -1,3 +1,12 @@
+"""
+Handlers de los comandos basicos del bot: /start, /help y /cancel.
+
+Este modulo se registra primero en el Dispatcher (en bot/main.py) para que sus comandos
+tengan prioridad sobre cualquier otro handler, incluyendo el handler generico de documentos.
+De esta manera /cancel siempre funciona, incluso cuando el usuario esta en medio de un
+proceso de traduccion activo.
+"""
+
 from aiogram import Router
 from aiogram.types import Message
 from aiogram.filters import Command
@@ -30,16 +39,31 @@ HELP = (
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
+    """
+    Responde al comando /start con el mensaje de bienvenida.
+
+    Limpia cualquier estado FSM previo del usuario antes de responder, lo cual
+    garantiza que si el usuario envio /start en medio de una sesion activa, esa
+    sesion se descarta correctamente y puede comenzar una nueva sin conflictos.
+    """
     await state.clear()
     await message.answer(WELCOME)
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
+    """Responde al comando /help con las instrucciones de uso del bot."""
     await message.answer(HELP)
 
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
+    """
+    Responde al comando /cancel limpiando el estado FSM actual.
+
+    Este handler funciona en cualquier momento del flujo porque el router de start
+    se registra antes que cualquier otro, de manera que /cancel siempre tiene
+    prioridad y el usuario nunca queda atrapado en un estado sin salida.
+    """
     await state.clear()
     await message.answer("Operacion cancelada. Envia un archivo para comenzar de nuevo.")
